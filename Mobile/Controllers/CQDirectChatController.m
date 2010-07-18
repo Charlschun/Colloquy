@@ -512,11 +512,11 @@ static BOOL showingKeyboard;
 
 	if ([word hasPrefix:@"/"]) {
 		static NSArray *commands;
-		if (!commands) commands = [[NSArray alloc] initWithObjects:@"/me", @"/msg", @"/nick", @"/away", @"/say", @"/raw", @"/quote", @"/join", @"/list", @"/quit", @"/disconnect", @"/query", @"/part", @"/notice", @"/umode", @"/globops", @"/whois",
+		if (!commands) commands = [[NSArray alloc] initWithObjects:@"/me", @"/msg", @"/nick", @"/join", @"/list", @"/away", @"/whois", @"/say", @"/raw", @"/quote", @"/quit", @"/disconnect", @"/query", @"/part", @"/notice", @"/umode", @"/globops",
 #if ENABLE(FILE_TRANSFERS)
 								   @"/dcc",
 #endif
-								   @"/google", @"/wikipedia", @"/amazon", @"/browser", @"/url", @"/clear", @"/nickserv", @"/chanserv", @"/help", @"/faq", @"/search", @"/ipod", @"/music", @"/squit", @"/welcome", @"/sysinfo", nil];
+								   @"/aaway", @"/anick", @"/aquit", @"/google", @"/wikipedia", @"/amazon", @"/safari", @"/browser", @"/url", @"/clear", @"/nickserv", @"/chanserv", @"/help", @"/faq", @"/search", @"/ipod", @"/music", @"/squit", @"/welcome", @"/sysinfo", nil];
 
 		for (NSString *command in commands) {
 			if ([command hasCaseInsensitivePrefix:word] && ![command isCaseInsensitiveEqualToString:word])
@@ -549,9 +549,9 @@ static BOOL showingKeyboard;
 	[self performSelector:@selector(resetDidSendRecently) withObject:nil afterDelay:0.5];
 
 	if ([text hasPrefix:@"/"] && ![text hasPrefix:@"//"] && text.length > 1) {
-		static NSArray *commandsNotRequiringConnection;
+		static NSSet *commandsNotRequiringConnection;
 		if (!commandsNotRequiringConnection)
-			commandsNotRequiringConnection = [[NSArray alloc] initWithObjects:@"google", @"wikipedia", @"amazon", @"browser", @"url", @"connect", @"reconnect", @"clear", @"help", @"faq", @"search", @"list", @"join", @"welcome", @"token", @"resetbadge", @"tweet", nil];
+			commandsNotRequiringConnection = [[NSSet alloc] initWithObjects:@"google", @"wikipedia", @"amazon", @"safari", @"browser", @"url", @"connect", @"reconnect", @"clear", @"help", @"faq", @"search", @"list", @"join", @"welcome", @"token", @"resetbadge", @"tweet", @"aquit", @"anick", @"aaway", nil];
 
 		// Send as a command.
 		NSScanner *scanner = [NSScanner scannerWithString:text];
@@ -661,8 +661,30 @@ static BOOL showingKeyboard;
 	return [self _handleURLCommandWithArguments:arguments preferBuiltInBrowser:YES];
 }
 
-- (BOOL) handleUrlCommandWithArguments:(NSString *) arguments {
+- (BOOL) handleSafariCommandWithArguments:(NSString *) arguments {
 	return [self _handleURLCommandWithArguments:arguments preferBuiltInBrowser:NO];
+}
+
+- (BOOL) handleUrlCommandWithArguments:(NSString *) arguments {
+	return [self handleSafariCommandWithArguments:arguments];
+}
+
+- (BOOL) handleAquitCommandWithArguments:(NSString *) arguments {
+	for (MVChatConnection *connection in [CQConnectionsController defaultController].connectedConnections)
+		[connection disconnectWithReason:arguments];
+	return YES;
+}
+
+- (BOOL) handleAawayCommandWithArguments:(NSString *) arguments {
+	for (MVChatConnection *connection in [CQConnectionsController defaultController].connectedConnections)
+		connection.awayStatusMessage = arguments;
+	return YES;
+}
+
+- (BOOL) handleAnickCommandWithArguments:(NSString *) arguments {
+	for (MVChatConnection *connection in [CQConnectionsController defaultController].connectedConnections)
+		connection.nickname = arguments;
+	return YES;
 }
 
 - (BOOL) handleJoinCommandWithArguments:(NSString *) arguments {
@@ -1223,17 +1245,18 @@ static BOOL showingKeyboard;
 - (void) addMessage:(NSDictionary *) message {
 	NSParameterAssert(message != nil);
 
+	CQProcessChatMessageOperation *operation = [[CQProcessChatMessageOperation alloc] initWithMessageInfo:message];
+	operation.highlightNickname = self.connection.nickname;
+	operation.encoding = self.encoding;
+	operation.fallbackEncoding = self.connection.encoding;
+
+	operation.target = self;
+	operation.action = @selector(_messageProcessed:);
+
 	if (!chatMessageProcessingQueue) {
 		chatMessageProcessingQueue = [[NSOperationQueue alloc] init];
 		chatMessageProcessingQueue.maxConcurrentOperationCount = 1;
 	}
-
-	CQProcessChatMessageOperation *operation = [[CQProcessChatMessageOperation alloc] initWithMessageInfo:message];
-	operation.highlightNickname = self.connection.nickname;
-	operation.encoding = self.encoding;
-
-	operation.target = self;
-	operation.action = @selector(_messageProcessed:);
 
 	[chatMessageProcessingQueue addOperation:operation];
 
@@ -1372,6 +1395,8 @@ static BOOL showingKeyboard;
 }
 
 - (void) _willBecomeActive {
+	[self _addPendingComponentsAnimated:NO];
+
 	if (_unreadHighlightedMessages)
 		[CQChatController defaultController].totalImportantUnreadCount -= _unreadHighlightedMessages;
 
@@ -1466,9 +1491,13 @@ static BOOL showingKeyboard;
 
 - (void) _processMessageData:(NSData *) messageData target:(id) target action:(SEL) action userInfo:(id) userInfo {
 	CQProcessChatMessageOperation *operation = [[CQProcessChatMessageOperation alloc] initWithMessageData:messageData];
+	operation.highlightNickname = self.connection.nickname;
 	operation.encoding = self.encoding;
+	operation.fallbackEncoding = self.connection.encoding;
+
 	operation.target = target;
 	operation.action = action;
+
 	operation.userInfo = userInfo;
 
 	if (!messageData) {
@@ -1557,6 +1586,12 @@ static BOOL showingKeyboard;
 
 		if (localNotificationOnPrivateMessage)
 			[self _showLocalNotificationForMessage:message withSoundName:privateMessageSound.soundName];
+
+		if ([[UIDevice currentDevice] isSystemFour] && UIAccessibilityIsVoiceOverRunning()) {
+			NSString *argument = [[NSString alloc] initWithFormat:NSLocalizedString(@"%@ privately messaged you, saying: %@", @"%@ privately messaged you, saying: %@"), user.nickname, message];
+			UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, argument);
+			[argument release];
+		}
 	}
 
 	if (highlighted && self.available) {
@@ -1568,6 +1603,12 @@ static BOOL showingKeyboard;
 
 		if (localNotificationOnHighlight && !directChat)
 			[self _showLocalNotificationForMessage:message withSoundName:highlightSound.soundName];
+
+		if ([[UIDevice currentDevice] isSystemFour] && UIAccessibilityIsVoiceOverRunning()) {
+			NSString *argument = [[NSString alloc] initWithFormat:NSLocalizedString(@"In %@, %@: %@", @"In <room>, <user>: <message>"), nil, user.nickname, message];
+			UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, argument);
+			[argument release];
+		}
 	}
 
 	if (!_recentMessages)
@@ -1581,7 +1622,14 @@ static BOOL showingKeyboard;
 
 	[self _addPendingComponent:message];
 
-	if (!user.localUser)
+	if (!user.localUser) {
+		if ([[UIDevice currentDevice] isSystemFour] && UIAccessibilityIsVoiceOverRunning()) {
+			NSString *argument = [[NSString alloc] initWithFormat:@"%@: %@", user.nickname, message];
+			UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, argument);
+			[argument release];
+		}
+
 		[[NSNotificationCenter defaultCenter] postNotificationName:CQChatViewControllerRecentMessagesUpdatedNotification object:self];
+	}
 }
 @end

@@ -12,6 +12,10 @@
 - (void) editItemAtIndex:(NSUInteger) index;
 @end
 
+@interface CQAwayStatusViewController (Private)
+- (BOOL) statusIsDefaultAwayStatus:(NSString *) status;
+@end
+
 @implementation CQAwayStatusViewController
 @synthesize connection = _connection;
 
@@ -21,15 +25,19 @@
 
 	self.title = NSLocalizedString(@"Create Away Status…", @"Create Away Status title");
 	NSMutableArray *awayStatuses = [[[NSUserDefaults standardUserDefaults] arrayForKey:@"CQAwayStatuses"] mutableCopy];
-	if (!awayStatuses.count)
+	if (!awayStatuses)
 		awayStatuses = [[NSMutableArray alloc] init];
 	NSString *defaultAwayStatus = [[NSUserDefaults standardUserDefaults] stringForKey:@"CQAwayStatus"];
 	if (defaultAwayStatus.length && ![awayStatuses containsObject:defaultAwayStatus])
 		[awayStatuses addObject:defaultAwayStatus];
 	else {
-		NSUInteger indexOfDefaultAwayStatus = [awayStatuses indexOfObject:defaultAwayStatus];
-		if (indexOfDefaultAwayStatus) {
-			[awayStatuses removeObjectAtIndex:indexOfDefaultAwayStatus];
+		if (![self statusIsDefaultAwayStatus:[awayStatuses objectAtIndex:0]]) {
+			for (NSUInteger i = 1; i <  awayStatuses.count; i++) {
+				NSString *status = [awayStatuses objectAtIndex:i];
+				if ([self statusIsDefaultAwayStatus:status])
+					[awayStatuses removeObjectAtIndex:i];
+			}
+
 			[awayStatuses insertObject:defaultAwayStatus atIndex:0];
 		}
 	}
@@ -43,10 +51,6 @@
 	self.target = self;
 	self.action = @selector(updateAwayStatuses:);
 
-	_defaultAwayStatusCache = [[NSMutableDictionary alloc] init];
-
-	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(userDefaultsChanged) name:NSUserDefaultsDidChangeNotification object:nil];
-
 	[awayStatuses release];
 
 	return self;
@@ -55,7 +59,6 @@
 - (void) dealloc {
 	[_connection release];
 	[_longPressGestureRecognizer release];
-	[_defaultAwayStatusCache release];
 
 	[super dealloc];
 }
@@ -73,23 +76,22 @@
 	}
 }
 
-- (void) userDefaultsChanged {
-	id old = _defaultAwayStatusCache;
-	_defaultAwayStatusCache = [[NSMutableDictionary alloc] init];
-	[old release];
+- (void) viewWillAppear:(BOOL) animated {
+	[super viewWillAppear:animated];
+
+	[[NSNotificationCenter defaultCenter] addObserver:self.tableView selector:@selector(reloadData) name:NSUserDefaultsDidChangeNotification object:nil];
+}
+
+- (void) viewWillDisappear:(BOOL) animated {
+	[super viewWillDisappear:animated];
+
+	[[NSNotificationCenter defaultCenter] removeObserver:self.tableView name:NSUserDefaultsDidChangeNotification object:nil];
 }
 
 #pragma mark -
 
-- (BOOL) statusIsIdenticalToStatusFromCellTitle:(NSString *) status {
-	NSString *defaultAwayStatus = [[NSUserDefaults standardUserDefaults] stringForKey:@"CQAwayStatus"];
-	NSNumber *cachedDefaultAwayStatus = [_defaultAwayStatusCache objectForKey:status];
-	if (cachedDefaultAwayStatus)
-		return [cachedDefaultAwayStatus boolValue];
-
-	BOOL isDefaultAwayStatus = defaultAwayStatus.length && [defaultAwayStatus isCaseInsensitiveEqualToString:status];
-	[_defaultAwayStatusCache setObject:[NSNumber numberWithBool:isDefaultAwayStatus] forKey:status];
-	return isDefaultAwayStatus;
+- (BOOL) statusIsDefaultAwayStatus:(NSString *) status {
+	return [status isEqualToString:[[NSUserDefaults standardUserDefaults] stringForKey:@"CQAwayStatus"]];
 }
 
 #pragma mark -
@@ -97,6 +99,9 @@
 - (void) _tableWasLongPressed:(UILongPressGestureRecognizer *) gestureReconizer {
 #if __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_3_2
 	if (gestureReconizer.state != UIGestureRecognizerStateBegan)
+		return;
+
+	if (self.tableView.editing)
 		return;
 
 	NSIndexPath *indexPath = [self.tableView indexPathForRowAtPoint:[gestureReconizer locationInView:self.tableView]];
@@ -107,12 +112,12 @@
 	if (!cell)
 		return;
 
-	if ([self statusIsIdenticalToStatusFromCellTitle:cell.textLabel.text])
+	if ([self statusIsDefaultAwayStatus:cell.textLabel.text])
 		return;
 
 	CQActionSheet *awayStatusActionSheet = [[CQActionSheet alloc] init];
 	awayStatusActionSheet.delegate = self;
-	awayStatusActionSheet.userInfo = cell.textLabel.text;
+	awayStatusActionSheet.userInfo = cell;
 
 	[awayStatusActionSheet addButtonWithTitle:NSLocalizedString(@"Make Default", @"Make Default button title")];
 
@@ -137,18 +142,19 @@
 	if (indexPath.row < _items.count) {
 		cell.textLabel.adjustsFontSizeToFitWidth = YES;
 		cell.textLabel.minimumFontSize = 15.;
+		cell.textLabel.textColor = [UIColor blackColor];
 	}
 
-	if ([self statusIsIdenticalToStatusFromCellTitle:cell.textLabel.text])
-		cell.textLabel.textColor = [UIColor blueColor];
+	if ([self statusIsDefaultAwayStatus:cell.textLabel.text])
+		cell.textLabel.textColor = [UIColor colorWithRed:(55. / 255.) green:(64. / 255.) blue:(135 / 255.) alpha:1.];
 
 	return cell;
 }
 
 - (NSIndexPath *) tableView:(UITableView *) tableView willSelectRowAtIndexPath:(NSIndexPath *) indexPath {
-	if ([self statusIsIdenticalToStatusFromCellTitle:[tableView cellForRowAtIndexPath:indexPath].textLabel.text])
+	if ([self statusIsDefaultAwayStatus:[tableView cellForRowAtIndexPath:indexPath].textLabel.text])
 		return nil;
-	return [super tableView:tableView willSelectRowAtIndexPath:indexPath];
+	return indexPath;
 }
 
 - (void) tableView:(UITableView *) tableView didSelectRowAtIndexPath:(NSIndexPath *) indexPath {
@@ -177,7 +183,7 @@
 }
 
 - (UITableViewCellEditingStyle) tableView:(UITableView *) tableView editingStyleForRowAtIndexPath:(NSIndexPath *) indexPath {
-	if ([self statusIsIdenticalToStatusFromCellTitle:[tableView cellForRowAtIndexPath:indexPath].textLabel.text])
+	if ([self statusIsDefaultAwayStatus:[tableView cellForRowAtIndexPath:indexPath].textLabel.text])
 		return UITableViewCellEditingStyleNone;
 	return [super tableView:tableView editingStyleForRowAtIndexPath:indexPath];
 }
@@ -185,13 +191,13 @@
 - (void) tableView:(UITableView *) tableView commitEditingStyle:(UITableViewCellEditingStyle) editingStyle forRowAtIndexPath:(NSIndexPath *) indexPath {
 	if (editingStyle == UITableViewCellEditingStyleInsert)
 		[self tableView:tableView didSelectRowAtIndexPath:indexPath];
-	else if ([self statusIsIdenticalToStatusFromCellTitle:[tableView cellForRowAtIndexPath:indexPath].textLabel.text])
+	else if ([self statusIsDefaultAwayStatus:[tableView cellForRowAtIndexPath:indexPath].textLabel.text])
 		[tableView deselectRowAtIndexPath:indexPath animated:[UIView areAnimationsEnabled]];
 	else [super tableView:tableView commitEditingStyle:editingStyle forRowAtIndexPath:indexPath];
 }
 
 - (BOOL) tableView:(UITableView *) tableView canMoveRowAtIndexPath:(NSIndexPath *) indexPath {
-	if ([self statusIsIdenticalToStatusFromCellTitle:[tableView cellForRowAtIndexPath:indexPath].textLabel.text])
+	if ([self statusIsDefaultAwayStatus:[tableView cellForRowAtIndexPath:indexPath].textLabel.text])
 		return UITableViewCellEditingStyleNone;
 	return [super tableView:tableView canMoveRowAtIndexPath:indexPath];
 }
@@ -201,7 +207,13 @@
 - (void) actionSheet:(UIActionSheet *) actionSheet clickedButtonAtIndex:(NSInteger) buttonIndex {
 	if (buttonIndex == actionSheet.destructiveButtonIndex)
 		return;
-	[[NSUserDefaults standardUserDefaults] setObject:((CQActionSheet *)buttonIndex).userInfo forKey:@"CQAwayStatus"];
+	
+	UITableViewCell *cell = ((CQActionSheet *)actionSheet).userInfo;
+	NSString *awayStatus = cell.textLabel.text;
+
+	[[NSUserDefaults standardUserDefaults] setObject:awayStatus forKey:@"CQAwayStatus"];
+
+	[self.tableView reloadData];
 }
 
 #pragma mark -
